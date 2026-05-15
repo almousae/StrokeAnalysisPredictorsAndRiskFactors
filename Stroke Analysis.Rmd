@@ -1,0 +1,233 @@
+---
+title: "Stroke Data Analysis"
+author: "Esmma Almousa"
+output: html_document
+---
+# Stroke Data Analysis with General Linear Model and Random Forest
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# Data Cleaning and Preparation for GLM Model:
+
+```{r,include = FALSE}
+library(tidyverse)
+library(mltools)
+library(data.table)
+library(dplyr)
+library(rfUtilities)
+library(randomForest)
+require(rms)
+library(randomForest)
+library(rfExtra)
+library(parallel)
+library(rpart)
+library(rpart.plot)
+library(caTools)
+library(caret)
+```
+
+
+##### Load Data: 
+```{r}
+stroke_data <- read_csv("stroke_data.csv")
+```
+##### Checking for NA values in each variable:
+```{r}
+colSums(is.na(stroke_data)) # It is noted that there are missing variables in metric_2 and smoking_status
+```
+##### Finding Unique Values
+
+```{r}
+ # Determining unique possible values of variables for the next step
+unique(stroke_data$gender)
+unique(stroke_data$married)
+unique(stroke_data$occupation)
+unique(stroke_data$residence)
+unique(stroke_data$smoking_status)
+```
+
+
+##### Convert Categorical Data to Numeric Values for GLM Model:
+
+```{r}
+edited_stroke_data <- stroke_data %>% #tidyverse library used to mutate current data
+
+  mutate(gender_numeric = case_when(gender == "Male" ~ 0,
+                                    gender == "Female" ~ 1,
+                                    TRUE ~ 2),
+         married_numeric = case_when(married == "No"~0,
+                                     married == "Yes"~1),
+         occupation_numeric =case_when(occupation =="A"~0,
+                                      occupation =="B"~1,
+                                      occupation =="C"~2,
+                                      occupation =="D"~3,
+                                      occupation == "E"~4
+                                        ), # Converting categorical data to numeric values
+         residence_numeric = case_when(residence=="Rural"~0,
+                                       residence=="Urban"~1
+                                       ),
+         smoking_numeric = case_when(
+           smoking_status =="never smoked"~0,
+           smoking_status == "formerly smoked"~1,
+           smoking_status == "smokes"~2,
+           TRUE ~ 3) # All NA values in smoking status are replaced with the number 3, which represents the value for unknowns.
+         ) %>% 
+  select(-id) # id number is removed from set in order to avoid its interference with the predictive model
+```
+
+
+##### Metric_2 Missing values are Imputed: 
+
+```{r}
+# categorical data is dropped in order to perform na.roughfix for missing values in metric_2
+numeric_stroke_data <- edited_stroke_data[,sapply(edited_stroke_data, is.numeric)]
+
+numeric_stroke_data$metric_2 <- na.roughfix(numeric_stroke_data$metric_2) # Due to lack of information about metric_2, NA's will be replaced by the median value of the variable in order to avoid dropping other useful data for the predictive model
+```
+
+
+```{r}
+colSums(is.na(numeric_stroke_data)) # Numeric cleaned dataset now has no NA values and is ready to be used for the GLM Model
+```
+# Data Cleaning and Preparation Summary:
+
+#### First, missing values within each variable were detected for the purpose of substitution. I chose to substitute missing values instead of dropping the entire row in order to utilize as much observational data for the predictive model as possible. All categorical data in the original set were replaced with numerical values. For example, in the variable "Gender", 0 represents "Males", 1 represents "Females", and 2 represents "Other". Variables were mannually mutated using the tidyverse package in order to replace all possible categorical variables with an assigned numerical value. One-hot-encoding was not used in order to avoid an increased number of variables and multicollinearity between them. It was noted that the smoking_status had 13292 missing variables and metric_2 had approximately 1462 missing values. Smoking_status was replaced with the numeric value "3" to represent a fourth category as "Unknown". Missing values in Metric_2 were replaced with the median value of the variable's column using na.roughfix since information about this metric is not provided and to avoid row dropping. Additionally, the variable "id" was dropped in order to avoid input of this variable in the predictive model. After these mutations, the data is now ready to be used for a GLM model.
+
+# GLM Model:
+
+##### Preparation for splitting training and test set
+
+```{r}
+levels(numeric_stroke_data$stroke) <- 0:1
+set.seed(123) #Setting seed allows for a fixed starting point
+split_data <- sample.split(numeric_stroke_data$stroke, SplitRatio = 0.80)
+```
+
+```{r}
+trainingSet <- subset(numeric_stroke_data, split_data == TRUE) # Training set is 80% of data
+testSet <- subset(numeric_stroke_data, split_data == FALSE) # Test set is remaining 20%
+```
+
+##### GLM Model and Summary:
+
+```{r}
+Stroke_glm <- glm(stroke ~ gender_numeric + age + married_numeric + hypertension + heart_disease + occupation_numeric + residence_numeric + metric_1 + metric_2 + metric_3 + metric_4  + smoking_numeric, data = trainingSet, family = binomial())
+# metric_5 was not incorporated in the model because it is proportional to metric_1
+summary(Stroke_glm)
+```
+
+##### GLM Model Applied to Test Set:
+
+```{r}
+Prediction_Model <- predict(Stroke_glm, testSet, type = "response")
+```
+
+
+
+##### Using Values from Prediction Model to Assign Participants to 0 or 1
+```{r}
+predictions <- data.frame(Prediction_Model) # Outcomes from model placed in dataframe
+
+predictions <- predictions %>% 
+  mutate(stroke = case_when(predictions[,1] > .025 ~ 1,
+                            TRUE ~0)) # If value is above the cutoff in the prediction dataframe is above a certain cutoff, participant is assigned to 1 for stroke, otherwise, participant is assigned to 0
+head(predictions)
+```
+
+##### Confusion Matrix for GLM Model's Performance:
+
+```{r}
+confusionMatrix(as.factor(predictions$stroke),as.factor(testSet$stroke))
+```
+
+```{r}
+source("unbalanced_code/unbalanced_functions.R")
+
+accuracy_info <- AccuracyCutoffInfo( train = trainingSet, test = testSet, 
+                                     predict = "prediction", actual = "left" )
+# define the theme for the next plot
+ggthemr("light")
+accuracy_info$plot
+```
+
+# GLM Model Results: 
+
+#### Based on the confusion matrix shown above, this model has an accuracy rate of 79.25%. The response variable was first split into two levels: 0 and 1. The split ratio for the training and test set was then assigned, where 80% of data would be assigned to the training set, and 20% would be assigned to the test set. A glm model was then designed using the training set, where stroke is predicted using all other variables in the dataset. Metric_5 was disregarded in the model because it is proportional to Metric_1. The GLM model was then used to predict results for the test set. Predicted outcomes were placed in a dataframe and rounded based on the assigned cutoff of .025. 
+
+# GLM Future Approaches:
+#### With more time, I would explore another GLM model using the significant model coefficients. The coefficient table for the GLM model showed that age, hypertension, heart disease, metric_1, and metric_2 all had significant positive influence on stroke. I would be interested in using these significant variables and comparing the accuracy with the current one that includes all other variables. I would also search for a more optimal cut off from the prediciton model that would best classify the two levels of stroke on the test set. 
+
+# Alternate Model: Random Forest:
+
+```{r}
+# Since RF can handle categorical variables, original dataset variables will be used
+rf_data <- stroke_data %>%  
+  mutate(smoking_numeric = case_when(
+           smoking_status =="never smoked"~0,
+           smoking_status == "formerly smoked"~1,
+           smoking_status == "smokes"~2,
+           TRUE ~ 3)) %>%  # Accounts for missing values in smoking_status
+  select(-smoking_status,-id) # smoking_status variable now dropped after updated variable has been created. 
+rf_data$metric_2 <- na.roughfix(rf_data$metric_2) # missing metric_2 values are replaced with median value of column
+```
+
+
+```{r}
+data = data.frame(rf_data, StringsAsFactors = TRUE) # Ensures Strings are converted to factors for RF preparation
+```
+
+
+```{r}
+factor.columns <- sapply(data,function(x)
+  class(x) != 'integer' &
+  class(x) != 'numeric') # Takes input and converts it to a matrix for purpose of RF use
+
+data[,factor.columns] <- data.frame(apply(data[,factor.columns,drop=F], 2, as.factor),stringsAsFactors = TRUE)
+```
+
+
+```{r}
+response <- "stroke"
+
+# Assigns response variables and predictor variables that will be used in RF Model and ensures there will be no missing values in the response variable
+response_var <- data[!is.na(data[response]), colnames(data) == response]
+predictor_vars <- data[!is.na(data[response]), colnames(data) != response]
+
+# Impute missing values in predictor variables
+predictor_vars <- na.roughfix(predictor_vars)
+set.seed(123)
+response_var = as.factor(response_var) # convert response variable to factor
+min_size = min(table(response_var)) 
+num_classes = length(table(response_var)) # down sampling will be used to avoid 
+```
+
+```{r}
+RF_Model = rfExtra::randomForest(x = predictor_vars, y = response_var,
+    importance = TRUE, ntree = 500,
+    sampsize = rep(min_size, num_classes))
+```
+
+
+```{r}
+RF_Model
+```
+
+```{r}
+plot(RF_Model) # plot to demonstrate how error changes as number of tree of forest increases
+```
+
+
+```{r}
+orderofimp<- data.frame(importance(RF_Model))
+Stroke_Order_of_Imp <- orderofimp[order(-orderofimp$MeanDecreaseAccuracy),]
+Stroke_Order_of_Imp # Sort variables in order of importance for RF Model.
+varImpPlot(RF_Model,,type=1)
+```
+
+
+# Alternatve Model Summary, Results, and Future Approaches:
+
+#### The accuracy of this model is approximately 80.3%. Random Forest was selected as the alternate model because it is known to be a strong classifier in research for predictive models regarding health risks and diseases. RF also comes with the advantage of having a lower risk for overfitting compared to GLM models. Missing values were handled the same way that NA values were handled within the GLM model. Since RF can handle both numeric and categorical variables, the original variables from the provided dataset were used in this model. 
+#### A disadvantage of Random Forest is that it leads to slower performance due to the high number of trees, which is why I only used 500 trees total for this model. In the future, I would perform random forest using parallel methods with more trees to improve both accuracy and run-time. I am also interested in using feature selection to incorporate the most important variables for prediction and determine the appropriate variables that should be used for the lowest possible error rate. 
